@@ -25,8 +25,10 @@ env:
   # comes from upstream; only the runtime base and the Bionic TUI lib are seeds.
   BUN_BASE_TAG: bun-base-v1.4.0-android-aarch64
   BUN_BASE_ASSET: opencode-bun-android-base-aarch64
-  OPENTUI_TAG: opentui-bionic-v0.8.0-aarch64
+  BUN_BASE_SHA256: 590047a730782dbfbcaf0166f0372bb1e5f562ca56c170331d68e71d256b6703
+  OPENTUI_TAG: opentui-bionic-ndk29-aarch64
   OPENTUI_ASSET: libopentui.so
+  OPENTUI_SHA256: a23e677fc9cff661f04813aebf3b5c9c0324ce53b795601704f049aa41385cdb
   NATIVE_ASSET: opencode-termux-native-aarch64.tar.gz
 
 jobs:
@@ -85,6 +87,14 @@ jobs:
           curl -fL --retry 3 -o .build/libopentui.so \
             "https://github.com/${{ github.repository }}/releases/download/${OPENTUI_TAG}/${OPENTUI_ASSET}"
 
+      - name: Verify seed checksums
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          cd .build
+          echo "${BUN_BASE_SHA256}  bun-android-base"     | sha256sum -c -
+          echo "${OPENTUI_SHA256}  libopentui.so"          | sha256sum -c -
+
       - name: Graft
         if: steps.exists.outputs.exists == 'false'
         run: |
@@ -94,6 +104,26 @@ jobs:
             --opentui .build/libopentui.so \
             --out dist/opencode
           file dist/opencode
+
+      # The whole point of the graft is that nothing in the load chain needs
+      # glibc. A silently-glibc output still runs on a dev machine and only
+      # breaks on the phone, so fail here instead.
+      - name: Verify the output is Bionic
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          if readelf -d dist/opencode \
+            | grep -E 'NEEDED.*\b(libc\.so\.6|libm\.so\.6|libpthread\.so\.0|libdl\.so\.2|libutil\.so\.1|libgcc_s\.so\.1)\b'; then
+            echo "::error::grafted binary still links against glibc"
+            exit 1
+          fi
+          readelf -h dist/opencode | grep -q 'AArch64' \
+            || { echo "::error::output is not aarch64"; exit 1; }
+          readelf -l dist/opencode | grep -q 'Requesting program interpreter: /system/bin/linker64' \
+            || { echo "::error::output has no Bionic program interpreter"; exit 1; }
+          readelf -d dist/opencode | grep -q 'NEEDED.*libc\.so' \
+            || echo "::warning::no libc.so DT_NEEDED entry; base may be static"
+          echo "output is aarch64 + Bionic, no glibc needed"
 
       - name: Package and checksum
         if: steps.exists.outputs.exists == 'false'

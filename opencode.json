@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": "allow",
+  "tools": {
+    "bash": true,
+    "edit": true,
+    "write": true,
+    "read": true,
+    "grep": true,
+    "glob": true,
+    "list": true,
+    "task": true,
+    "lsp": true,
+    "apply_patch": true,
+    "skill": true,
+    "todowrite": true,
+    "webfetch": true,
+    "websearch": true,
+    "question": true
+  }
+}

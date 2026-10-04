@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.build/
+dist-native/
+*.tgz
+.DS_Store
+__pycache__/
+*.pyc

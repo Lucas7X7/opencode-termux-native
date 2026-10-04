@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.6 is the minimum that strips types; current is kept honest so a
+        # breaking change in the runtime is caught before a release.
+        node: ['22.6', 'current']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      # The compiled CLI is what ships as `bin`; exercise it, don't just compile.
+      - name: smoke test the built CLI
+        run: |
+          node dist/src/cli.js version
+          node dist/src/cli.js help

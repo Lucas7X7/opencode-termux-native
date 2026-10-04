@@ -1,0 +1,53 @@
+{
+  "name": "opencode-termux-native",
+  "version": "0.1.0",
+  "description": "Native Bionic builds of OpenCode for Termux (Android aarch64). No glibc, no proot. Works on the F-Droid and Play Store Termux.",
+  "license": "MIT",
+  "type": "module",
+  "author": "lucas7x7",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lucas7X7/opencode-termux-native.git"
+  },
+  "homepage": "https://github.com/Lucas7X7/opencode-termux-native#readme",
+  "bugs": {
+    "url": "https://github.com/Lucas7X7/opencode-termux-native/issues"
+  },
+  "bin": {
+    "opencode-termux": "./dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "files": [
+    "dist",
+    "src",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "node --experimental-strip-types src/cli.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test:watch": "node --experimental-strip-types --test --watch test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "opencode",
+    "termux",
+    "android",
+    "bionic",
+    "aarch64",
+    "arm64",
+    "cli",
+    "ai",
+    "coding-agent"
+  ],
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "@types/node": "^24.0.0"
+  }
+}

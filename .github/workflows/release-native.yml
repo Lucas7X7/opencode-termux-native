@@ -1,0 +1,133 @@
+name: release-native
+
+on:
+  workflow_dispatch:
+    inputs:
+      opencode_version:
+        description: OpenCode version (e.g. 1.18.31) or 'latest'
+        required: false
+        default: latest
+  schedule:
+    - cron: '0 4 * * *'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-native
+  cancel-in-progress: false
+
+env:
+  # Pinned once as release assets in this repository. The OpenCode code always
+  # comes from upstream; only the runtime base and the Bionic TUI lib are seeds.
+  BUN_BASE_TAG: bun-base-v1.4.0-android-aarch64
+  BUN_BASE_ASSET: opencode-bun-android-base-aarch64
+  OPENTUI_TAG: opentui-bionic-v0.8.0-aarch64
+  OPENTUI_ASSET: libopentui.so
+  NATIVE_ASSET: opencode-termux-native-aarch64.tar.gz
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve OpenCode version
+        id: ver
+        env:
+          INPUT: ${{ github.event.inputs.opencode_version }}
+        run: |
+          if [ "${INPUT}" = "latest" ] || [ -z "${INPUT}" ]; then
+            V="$(curl -fsSL https://api.github.com/repos/anomalyco/opencode/releases/latest | jq -r '.tag_name' | sed 's/^v//')"
+          else
+            V="$(echo "${INPUT}" | sed 's/^v//')"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "OPENCODE_V=${V}" >> "$GITHUB_ENV"
+
+      - name: Check for an existing release
+        id: exists
+        run: |
+          if curl -fsSL -o /dev/null "https://api.github.com/repos/${{ github.repository }}/releases/tags/v${OPENCODE_V}-native"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Up to date
+        if: steps.exists.outputs.exists == 'true'
+        run: echo "v${OPENCODE_V}-native already published; nothing to do."
+
+      - name: Prepare
+        if: steps.exists.outputs.exists == 'false'
+        run: mkdir -p .build dist
+
+      - name: Download OpenCode (linux-arm64)
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          curl -fL --retry 3 -o .build/opencode-linux-arm64.tar.gz \
+            "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_V}/opencode-linux-arm64.tar.gz"
+
+      - name: Download pinned Bionic base
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          curl -fL --retry 3 -o .build/bun-android-base \
+            "https://github.com/${{ github.repository }}/releases/download/${BUN_BASE_TAG}/${BUN_BASE_ASSET}"
+          chmod +x .build/bun-android-base
+
+      - name: Download Bionic libopentui.so
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          curl -fL --retry 3 -o .build/libopentui.so \
+            "https://github.com/${{ github.repository }}/releases/download/${OPENTUI_TAG}/${OPENTUI_ASSET}"
+
+      - name: Graft
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          python3 scripts/graft.py \
+            --base .build/bun-android-base \
+            --opencode-tar .build/opencode-linux-arm64.tar.gz \
+            --opentui .build/libopentui.so \
+            --out dist/opencode
+          file dist/opencode
+
+      - name: Package and checksum
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          cd dist
+          tar -czf "${NATIVE_ASSET}" opencode
+          sha256sum "${NATIVE_ASSET}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish release
+        if: steps.exists.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}-native
+          name: OpenCode v${{ steps.ver.outputs.version }} — Termux Native (Bionic)
+          body: |
+            Native Bionic build of [OpenCode v${{ steps.ver.outputs.version }}](https://github.com/anomalyco/opencode/releases/tag/v${{ steps.ver.outputs.version }}) for Termux (`aarch64`), zero glibc.
+
+            ```bash
+            pkg install nodejs -y
+            npx opencode-termux-native install
+            ```
+
+            **Assets**
+            - `${{ env.NATIVE_ASSET }}` — grafted `opencode` with the Bionic `libopentui.so` embedded
+            - `SHA256SUMS` — SHA256 checksum
+
+            **Notes**
+            - Built by deterministic module-graph graft against upstream `opencode-linux-arm64.tar.gz`.
+            - The embedded glibc `libopentui.so` is swapped for a same-length Bionic build (interactive TUI included).
+            - Runtime: Android/Bionic (`/system/bin/linker64`), no glibc/proot.
+            - Android API ≥ 28; F-Droid, GitHub and Play Store Termux.
+          files: |
+            dist/${{ env.NATIVE_ASSET }}
+            dist/SHA256SUMS
+          draft: false
+          prerelease: false

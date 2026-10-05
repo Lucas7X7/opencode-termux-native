@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { options, parse } from '../src/args.ts'
 
@@ -49,4 +50,27 @@ test('accepts an alternate repository and skips verification on request', () => 
     repo: 'someone/else',
     verify: false,
   })
+})
+test('reads the long help and version spellings as commands, not flags', () => {
+  // Both must reach the CLI. An empty command runs an install, so parsing
+  // `--help` as a flag would turn a request for help into a 180 MB download.
+  assert.equal(parse(['--help']).command, '--help')
+  assert.equal(parse(['--version']).command, '--version')
+  assert.deepEqual(parse(['--help']).flags, {})
+  assert.deepEqual(parse(['--version']).flags, {})
+})
+
+test('still treats a flag after --help as belonging to install', () => {
+  assert.equal(parse(['--help', '--repo', 'a/b']).command, '--help')
+  assert.deepEqual(parse(['--help', '--repo', 'a/b']).flags, { repo: 'a/b' })
+})
+
+test('reports the version from package.json', async () => {
+  // A hardcoded constant drifted from the manifest once already and shipped a
+  // binary that called itself 0.1.0 inside a 0.1.1 package.
+  const { VERSION } = await import('../src/version.ts')
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+    version: string
+  }
+  assert.equal(VERSION, pkg.version)
 })

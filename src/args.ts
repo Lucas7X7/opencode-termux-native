@@ -44,6 +44,14 @@ export function parse(argv: string[]): Parsed {
       break
     }
 
+    // The long spellings are commands, not flags: `-h` and `-v` already reach
+    // the CLI this way. Without this they would be parsed as `--help=true`,
+    // leaving the command empty, and an empty command runs an install.
+    if (!command && (arg === '--help' || arg === '--version')) {
+      command = arg
+      continue
+    }
+
     if (arg.startsWith('--')) {
       const eq = arg.indexOf('=')
       if (eq !== -1) {

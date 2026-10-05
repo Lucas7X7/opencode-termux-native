@@ -1,6 +1,6 @@
 {
   "name": "opencode-termux-native",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Native Bionic builds of OpenCode for Termux (Android aarch64). No glibc, no proot. Works on the F-Droid and Play Store Termux.",
   "license": "MIT",
   "type": "module",

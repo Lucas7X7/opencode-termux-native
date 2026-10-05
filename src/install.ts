@@ -53,7 +53,7 @@ async function resolveRelease(options: InstallOptions): Promise<Release> {
   if (options.opencodeVersion) {
     return fetchReleaseByTag(nativeTagFor(options.opencodeVersion), repo, options.token)
   }
-  return fetchLatestRelease(repo, options.token)
+  return fetchLatestRelease(repo, options.token, NATIVE_ASSET)
 }
 
 function findFile(root: string, name: string): string | undefined {

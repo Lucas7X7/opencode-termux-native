@@ -68,11 +68,24 @@ async function getJson(url: string, token?: string): Promise<unknown> {
 export async function fetchLatestRelease(
   repo = DEFAULT_REPO,
   token = process.env.GITHUB_TOKEN,
+  requireAsset?: string,
 ): Promise<Release> {
   const raw = await getJson(`https://api.github.com/repos/${repo}/releases/latest`, token)
   const release = parseRelease(raw)
   if (!release) throw new Error(`no published release found for ${repo}`)
-  return release
+  if (!requireAsset || assetUrl(release, requireAsset)) return release
+
+  // `/releases/latest` is whatever was created most recently, and this repo also
+  // holds pinned seed releases. Without this walk, re-uploading a seed asset
+  // would make `latest` point at a release with no native build in it and the
+  // install would fail with a confusing "has no asset" error.
+  const list = await getJson(`https://api.github.com/repos/${repo}/releases?per_page=30`, token)
+  const candidates = Array.isArray(list) ? list : []
+  for (const candidate of candidates) {
+    const parsed = parseRelease(candidate)
+    if (parsed && assetUrl(parsed, requireAsset)) return parsed
+  }
+  throw new Error(`no release for ${repo} carries ${requireAsset}`)
 }
 
 export async function fetchReleaseByTag(

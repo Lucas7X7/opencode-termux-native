@@ -66,7 +66,9 @@ opencode-termux install --opencode 1.18.31
 opencode-termux doctor --json
 ```
 
-Everything after `run` is forwarded to OpenCode verbatim, flags included, so `run --version` and `run -- --version` both reach the runtime instead of being read as installer flags.
+Everything after `run` is forwarded to the runtime verbatim, flags included, so `run --version` and `run -- --version` are no longer swallowed as installer flags.
+
+Note that the grafted runtime is a Bun standalone executable, and Bun claims `--version` before OpenCode's code runs, so `run --version` prints **Bun's** version. OpenCode has no `--version` flag of its own; `opencode-termux doctor` reports the installed OpenCode version.
 
 | Flag | Effect |
 |---|---|

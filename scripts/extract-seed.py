@@ -20,6 +20,7 @@ import sys
 
 TRAILER = b"\n---- Bun! ----\n"
 OFFSETS_SIZE = 32
+LEAD_SIZE = 8
 ELF_MAGIC = b"\x7fELF"
 
 
@@ -38,6 +39,13 @@ def payload_layout(buf: bytes) -> tuple[int, int, int, int, int]:
     byte_count = struct.unpack_from("<Q", buf, offsets_pos)[0]
     modules_off, modules_len = struct.unpack_from("<II", buf, offsets_pos + 8)
     graph_start = offsets_pos - byte_count
+    lead = struct.unpack_from("<Q", buf, graph_start - LEAD_SIZE)[0]
+    expected = byte_count + OFFSETS_SIZE + len(TRAILER)
+    if lead != expected:
+        fail(
+            "Bun payload lead does not match the blob length "
+            f"(lead={lead} expected={expected})"
+        )
     if byte_count == 0 or graph_start <= 0:
         fail(f"implausible module graph (byte_count={byte_count} binary={len(buf)})")
     return trailer_pos, byte_count, graph_start, modules_off, modules_len
@@ -97,7 +105,8 @@ def main() -> None:
     blob = data[graph_start : graph_start + byte_count]
     stride = detect_stride(blob, modules_off, modules_len)
 
-    base = data[:graph_start]
+    # The 8-byte lead belongs to the payload framing, not to the Bun base.
+    base = data[: graph_start - LEAD_SIZE]
     base_path = os.path.join(outdir, "bun-base.bin")
     with open(base_path, "wb") as handle:
         handle.write(base)

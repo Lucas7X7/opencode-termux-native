@@ -61,13 +61,16 @@ test('transplants the payload onto a Bionic base', { skip }, () => {
   const offsets = Buffer.alloc(OFFSETS_SIZE)
   offsets.writeBigUInt64LE(BigInt(blob.length), 0)
   const graphLength = blob.length + OFFSETS_SIZE + TRAILER.length
-  const total = BigInt(bionicBase.length + graphLength + 8)
-  const footer = Buffer.alloc(8)
-  footer.writeBigUInt64LE(total, 0)
-  const expected = Buffer.concat([bionicBase, blob, offsets, TRAILER, footer])
+  const lead = Buffer.alloc(8)
+  lead.writeBigUInt64LE(BigInt(graphLength), 0)
+  const expected = Buffer.concat([bionicBase, lead, blob, offsets, TRAILER])
 
   assert.deepEqual(out, expected)
-  assert.ok(out.subarray(-24, -8).equals(TRAILER), 'trailer is not 24 bytes from the end')
+  // The trailer ends the file. Bun locates the payload by scanning back for it
+  // and validating the lead in front of the blob; a trailing u64 invalidates
+  // that and the binary silently degrades to the Bun CLI.
+  assert.ok(out.subarray(-TRAILER.length).equals(TRAILER), 'trailer is not at the end')
+  assert.equal(out.readBigUInt64LE(bionicBase.length), BigInt(graphLength))
 })
 
 test('rejects a binary with no Bun trailer', { skip }, () => {

@@ -49,16 +49,19 @@ export function fakeElfAarch64(size = 256, fill = 0): Buffer {
 /**
  * Build a synthetic Bun standalone binary using the real payload layout:
  *
- *   [base][blob (byte_count)][Offsets 32B][trailer 16B][u64 total]
+ *   [base][u64 lead][blob (byte_count)][Offsets 32B][trailer 16B]
+ *
+ * There is no `u64 total` footer: the upstream file keeps its section table
+ * after the trailer, and a fabricated footer makes Bun reject the payload and
+ * fall back to its own CLI.
  */
 export function buildStandalone(base: Buffer, blob: Buffer): Buffer {
   const offsets = Buffer.alloc(OFFSETS_SIZE)
   offsets.writeBigUInt64LE(BigInt(blob.length), 0)
   const trailer = Buffer.from(BUN_TRAILER)
-  const total = BigInt(base.length + blob.length + OFFSETS_SIZE + trailer.length + 8)
-  const footer = Buffer.alloc(8)
-  footer.writeBigUInt64LE(total, 0)
-  return Buffer.concat([base, blob, offsets, trailer, footer])
+  const lead = Buffer.alloc(8)
+  lead.writeBigUInt64LE(BigInt(blob.length + OFFSETS_SIZE + trailer.length), 0)
+  return Buffer.concat([base, lead, blob, offsets, trailer])
 }
 
 export interface FakeModule {
@@ -102,8 +105,7 @@ export function buildStandaloneWithModules(base: Buffer, modules: FakeModule[]):
 
   const trailer = Buffer.from(BUN_TRAILER)
   const graph = Buffer.concat([...chunks, table, offsets, trailer])
-  const total = BigInt(base.length + graph.length + 8)
-  const footer = Buffer.alloc(8)
-  footer.writeBigUInt64LE(total, 0)
-  return Buffer.concat([base, graph, footer])
+  const lead = Buffer.alloc(8)
+  lead.writeBigUInt64LE(BigInt(graph.length), 0)
+  return Buffer.concat([base, lead, graph])
 }

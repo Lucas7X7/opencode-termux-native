@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Graft the OpenCode compiled module graph onto a Bionic Bun base.
 
-OpenCode ships as a Bun standalone executable: a Bun runtime, a serialized
-module graph, then an 8-byte ``total_byte_count`` footer. The official
+OpenCode ships as a Bun standalone executable: a Bun runtime, a length-prefixed
+serialized module graph, and the ``---- Bun! ----`` trailer. The official
 ``linux-arm64`` build links that runtime against glibc, which Android does not
 have. This script keeps the OpenCode module graph but renders it on a Bun base
 built for Android's Bionic libc, producing a single native ELF.
@@ -28,14 +28,24 @@ TRAILER = b"\n---- Bun! ----\n"
 ELF_MAGIC = b"\x7fELF"
 # Bun's standalone payload (ELF) is laid out as:
 #
-#   [Bun runtime][serialized data (byte_count)][Offsets (32 bytes)][trailer][u64 total]
+#   [Bun runtime][u64 lead][serialized data (byte_count)][Offsets (32 bytes)][trailer]
 #
 # ``Offsets`` is a #[repr(C)] struct whose first field, ``byte_count``, is the
 # size of the serialized data blob that precedes it. The remaining fields are
 # offsets relative to the start of that blob, so the blob can be transplanted
 # onto a different Bun runtime unchanged.
+#
+# Two details that are easy to get wrong, and that make a grafted binary fall
+# back to the Bun CLI instead of running its embedded entrypoint:
+#
+#   * the ``lead`` u64 sits between the runtime and the blob and must be
+#     carried over. It equals the blob length plus the 48 bytes of trailing
+#     struct, i.e. ``len(blob) + OFFSETS_SIZE + len(TRAILER)``.
+#   * there is NO ``u64 total`` footer. The upstream file keeps its section
+#     table after the trailer, and Bun locates the payload by scanning back for
+#     the trailer; a fabricated footer at EOF invalidates it.
 OFFSETS_SIZE = 32
-FOOTER_SIZE = 8
+LEAD_SIZE = 8
 
 
 def fail(message: str) -> None:
@@ -70,8 +80,8 @@ def extract_opencode(tarball: str) -> bytes:
     fail("no 'opencode' binary inside the upstream tarball")
 
 
-def payload_layout(source: bytes) -> tuple[int, int, int, int, int]:
-    """Return (trailer_pos, byte_count, graph_start, modules_off, modules_len)."""
+def payload_layout(source: bytes) -> tuple[int, int, int, int, int, int]:
+    """Return (trailer_pos, byte_count, graph_start, modules_off, modules_len, lead)."""
     trailer_pos = source.rfind(TRAILER)
     if trailer_pos < 0:
         fail("Bun trailer not found in the OpenCode binary")
@@ -83,18 +93,38 @@ def payload_layout(source: bytes) -> tuple[int, int, int, int, int]:
     byte_count = struct.unpack_from("<Q", source, offsets_pos)[0]
     modules_off, modules_len = struct.unpack_from("<II", source, offsets_pos + 8)
     graph_start = offsets_pos - byte_count
-    if byte_count == 0 or graph_start < 0:
+    if byte_count == 0 or graph_start - LEAD_SIZE < 0:
         fail(
             "implausible module graph "
             f"(byte_count={byte_count} binary={len(source)})"
         )
-    return trailer_pos, byte_count, graph_start, modules_off, modules_len
+
+    # The 8 bytes in front of the blob are a length prefix for everything from
+    # the blob's start through the trailer. Verifying it keeps us honest about
+    # where the blob really begins instead of trusting a single field.
+    lead_pos = graph_start - LEAD_SIZE
+    lead = struct.unpack_from("<Q", source, lead_pos)[0]
+    expected = byte_count + OFFSETS_SIZE + len(TRAILER)
+    if lead != expected:
+        fail(
+            "Bun payload lead does not match the blob length "
+            f"(lead={lead} expected={expected})"
+        )
+
+    return trailer_pos, byte_count, graph_start, modules_off, modules_len, lead
 
 
 def module_graph(source: bytes) -> bytes:
-    """Return the self-contained Bun payload, trailer included."""
-    trailer_pos, _byte_count, graph_start, _modules_off, _modules_len = payload_layout(source)
-    graph = source[graph_start : trailer_pos + len(TRAILER)]
+    """Return the self-contained Bun payload, lead and trailer included."""
+    (
+        trailer_pos,
+        _byte_count,
+        graph_start,
+        _modules_off,
+        _modules_len,
+        _lead,
+    ) = payload_layout(source)
+    graph = source[graph_start - LEAD_SIZE : trailer_pos + len(TRAILER)]
     if not graph.endswith(TRAILER):
         fail("module graph does not end with the Bun trailer")
     if graph[:4] == ELF_MAGIC:
@@ -138,7 +168,14 @@ def patch_embedded_library(
     the recorded length moves nothing and the freed bytes stay as padding inside
     the blob, where they are inert.
     """
-    _trailer, byte_count, graph_start, modules_off, modules_len = payload_layout(source)
+    (
+        _trailer,
+        byte_count,
+        graph_start,
+        modules_off,
+        modules_len,
+        _lead,
+    ) = payload_layout(source)
     blob = source[graph_start : graph_start + byte_count]
     stride = detect_stride(blob, modules_off, modules_len)
 
@@ -187,8 +224,8 @@ def graft(
 
     graph = module_graph(bytes(source))
 
-    total = len(base) + len(graph) + FOOTER_SIZE
-    result = base + graph + struct.pack("<Q", total)
+    total = len(base) + len(graph)
+    result = base + graph
 
     with open(out_path, "wb") as handle:
         handle.write(result)

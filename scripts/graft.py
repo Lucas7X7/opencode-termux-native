@@ -9,8 +9,9 @@ built for Android's Bionic libc, producing a single native ELF.
 
 The module graph also embeds native shared objects (``libopentui.so`` and
 friends) that were linked against glibc. ``--opentui`` swaps the embedded
-``libopentui*.so`` for a Bionic build of the same length, in place, so the
-serialized offsets stay valid.
+``libopentui*.so`` for a Bionic build in place, so the serialized offsets stay
+valid, and lowers the length recorded for that module to the size of the
+replacement so the runtime does not write the padding to disk.
 
 Only the Python standard library is used so the build runs anywhere.
 """
@@ -22,7 +23,6 @@ import os
 import struct
 import sys
 import tarfile
-import tempfile
 
 TRAILER = b"\n---- Bun! ----\n"
 ELF_MAGIC = b"\x7fELF"
@@ -43,13 +43,6 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def extract_member(archive: tarfile.TarFile, member: tarfile.TarInfo, work: str) -> None:
-    try:
-        archive.extract(member, work, filter="data")
-    except TypeError:
-        archive.extract(member, work)
-
-
 def elftype(path: str) -> str:
     with open(path, "rb") as handle:
         header = handle.read(20)
@@ -60,19 +53,21 @@ def elftype(path: str) -> str:
 
 
 def extract_opencode(tarball: str) -> bytes:
+    """Read the upstream binary straight out of the archive.
+
+    Extracting it to a temporary directory first writes ~180 MB to disk only to
+    read it straight back into memory, which is enough to run a small CI runner
+    or a phone out of space for no reason.
+    """
     with tarfile.open(tarball, "r:gz") as archive:
-        member = None
-        for candidate in archive.getmembers():
-            base = os.path.basename(candidate.name)
-            if base == "opencode" and candidate.isfile():
-                member = candidate
-                break
-        if member is None:
-            fail("no 'opencode' binary inside the upstream tarball")
-        with tempfile.TemporaryDirectory() as work:
-            extract_member(archive, member, work)
-            with open(os.path.join(work, member.name), "rb") as handle:
-                return handle.read()
+        for member in archive.getmembers():
+            if os.path.basename(member.name) == "opencode" and member.isfile():
+                handle = archive.extractfile(member)
+                if handle is None:
+                    fail("could not read the 'opencode' member from the tarball")
+                with handle:
+                    return handle.read()
+    fail("no 'opencode' binary inside the upstream tarball")
 
 
 def payload_layout(source: bytes) -> tuple[int, int, int, int, int]:
@@ -130,8 +125,19 @@ def detect_stride(blob: bytes, modules_off: int, modules_len: int) -> int:
 
 def patch_embedded_library(
     source: bytearray, replacement: bytes, stem: bytes = b"libopentui"
-) -> str:
-    """Replace the contents of an embedded ``.so`` in place. Returns its name."""
+) -> tuple[str, int]:
+    """Replace an embedded ``.so`` in place. Returns its name and recorded length.
+
+    The replacement is written into the slot reserved by the graph and then the
+    recorded ``contents_len`` is lowered to the real size of the object.
+
+    That second step matters at runtime. Bun materialises an embedded library
+    into a temp file before ``dlopen`` and writes exactly ``contents_len`` bytes,
+    so keeping the padded length left a ~13 MB copy of a 5.6 MB library behind in
+    ``/tmp`` on every single run. Offsets in the graph are absolute, so shortening
+    the recorded length moves nothing and the freed bytes stay as padding inside
+    the blob, where they are inert.
+    """
     _trailer, byte_count, graph_start, modules_off, modules_len = payload_layout(source)
     blob = source[graph_start : graph_start + byte_count]
     stride = detect_stride(blob, modules_off, modules_len)
@@ -150,7 +156,8 @@ def patch_embedded_library(
                 )
             start = graph_start + contents_off
             source[start : start + contents_len] = replacement.ljust(contents_len, b"\x00")
-            return name.decode()
+            struct.pack_into("<I", source, graph_start + rec + 12, len(replacement))
+            return name.decode(), len(replacement)
     fail(f"no embedded library matching {stem.decode()!r} found in the module graph")
 
 
@@ -170,12 +177,13 @@ def graft(
     source = bytearray(extract_opencode(tarball))
 
     patched: str | None = None
+    recorded: int | None = None
     if libopentui is not None:
         with open(libopentui, "rb") as handle:
             replacement = handle.read()
         if replacement[:4] != ELF_MAGIC:
             fail(f"{libopentui} is not an ELF shared object")
-        patched = patch_embedded_library(source, replacement)
+        patched, recorded = patch_embedded_library(source, replacement)
 
     graph = module_graph(bytes(source))
 
@@ -186,7 +194,13 @@ def graft(
         handle.write(result)
     os.chmod(out_path, 0o755)
 
-    return {"base": len(base), "graph": len(graph), "total": total, "patched": patched}
+    return {
+        "base": len(base),
+        "graph": len(graph),
+        "total": total,
+        "patched": patched,
+        "recorded": recorded,
+    }
 
 
 def main() -> None:
@@ -202,7 +216,10 @@ def main() -> None:
 
     stats = graft(args.base, args.opencode_tar, args.out, args.opentui)
     patched = stats["patched"]
+    recorded = stats["recorded"]
     extra = f" opentui={patched}" if patched else ""
+    if recorded is not None:
+        extra += f" recorded_len={recorded}"
     print(
         f"grafted {args.out}: base={stats['base']} graph={stats['graph']} "
         f"total={stats['total']}{extra}",

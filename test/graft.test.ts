@@ -80,6 +80,40 @@ const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46])
 const fakeLib = (size: number, fill: number): Buffer =>
   Buffer.concat([ELF_MAGIC, Buffer.alloc(size - ELF_MAGIC.length, fill)])
 
+/** Read the module graph: recorded length per module, plus the blob size. */
+function readGraph(binary: Buffer): { lengths: Map<string, number>; byteCount: number } {
+  const trailerPos = binary.lastIndexOf(TRAILER)
+  const offsetsPos = trailerPos - OFFSETS_SIZE
+  const byteCount = Number(binary.readBigUInt64LE(offsetsPos))
+  const modulesOff = binary.readUInt32LE(offsetsPos + 8)
+  const modulesLen = binary.readUInt32LE(offsetsPos + 12)
+  const graphStart = offsetsPos - byteCount
+  const lengths = new Map<string, number>()
+
+  for (const stride of [52, 36]) {
+    if (modulesLen % stride !== 0) continue
+    const attempt = new Map<string, number>()
+    let valid = true
+    for (let i = 0; i < modulesLen / stride; i += 1) {
+      const rec = graphStart + modulesOff + i * stride
+      const nameOff = binary.readUInt32LE(rec)
+      const nameLen = binary.readUInt32LE(rec + 4)
+      if (nameLen === 0 || nameLen > 4096) {
+        valid = false
+        break
+      }
+      const name = binary.subarray(graphStart + nameOff, graphStart + nameOff + nameLen).toString()
+      if (!name.startsWith('/')) {
+        valid = false
+        break
+      }
+      attempt.set(name, binary.readUInt32LE(rec + 12))
+    }
+    if (valid) return { lengths: attempt, byteCount }
+  }
+  throw new Error('could not read the module graph')
+}
+
 test('swaps the embedded libopentui for a Bionic build', { skip }, () => {
   const glibc = fakeLib(64, 0x11)
   const bionic = fakeLib(64, 0x22)
@@ -107,6 +141,31 @@ test('pads a shorter libopentui replacement', { skip }, () => {
 
   assert.equal(status, 0, stderr)
   assert.ok(out?.includes(bionic), 'Bionic libopentui is missing from the output')
+})
+
+// Bun materialises an embedded library into a temp file before dlopen and writes
+// exactly the recorded length, so leaving the padded length in place left a 13 MB
+// copy of a 5.6 MB library in /tmp on every run. The recorded length has to follow
+// the replacement, and because offsets are absolute nothing else may move.
+test('records the real library length instead of the padded slot', { skip }, () => {
+  const glibc = fakeLib(64, 0x11)
+  const bionic = fakeLib(60, 0x22)
+  const opencodeFile = buildStandaloneWithModules(fakeElfAarch64(400), [
+    { name: '/$bunfs/root/libopentui-abc.so', contents: glibc },
+  ])
+
+  const upstream = readGraph(opencodeFile)
+  assert.equal(upstream.lengths.get('/$bunfs/root/libopentui-abc.so'), 64)
+
+  const { status, stderr, out } = runGraft(fakeElfAarch64(300), opencodeFile, bionic)
+
+  assert.equal(status, 0, stderr)
+  assert.ok(out, 'graft produced no output')
+
+  const grafted = readGraph(out)
+  assert.equal(grafted.lengths.get('/$bunfs/root/libopentui-abc.so'), 60)
+  // The blob keeps its size, so every other offset in the graph stays valid.
+  assert.equal(grafted.byteCount, upstream.byteCount)
 })
 
 test('rejects a libopentui replacement that is too large', { skip }, () => {

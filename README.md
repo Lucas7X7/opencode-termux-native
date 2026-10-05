@@ -62,7 +62,7 @@ opencode-termux install                 # install or update
 opencode-termux doctor                  # check whether the device runs the native build
 opencode-termux run -- --version        # forward arguments to OpenCode
 opencode-termux uninstall               # remove binary, launcher and libs
-opencode-termux install --opencode 1.18.31
+opencode-termux install --opencode 1.18.34
 opencode-termux doctor --json
 ```
 
@@ -92,9 +92,23 @@ release tarball (opencode-linux-arm64)     Android Bun base (aarch64, Bionic)
 1. Extract the official binary's payload: locate the `---- Bun! ----` trailer and read the `byte_count` (u64) in the `Offsets` struct (32 bytes) just before it.
 2. Append that self-contained payload (`blob` + `Offsets` + trailer) to a **pinned aarch64 Bionic Bun base**.
 3. Write the `total_byte_count` footer (u64 LE) = total file size, keeping Bun's standalone format.
-4. Swap the embedded `libopentui.so` (glibc-linked) for a Bionic build of **the same size**, in place, via `--opentui`. That's the only patch required: the rest of the graph stays byte-for-byte identical to upstream v1.18.21.
+4. Swap the embedded `libopentui.so` (glibc-linked) for a Bionic build, in place, via `--opentui`, and lower the length recorded for that module to the size of the replacement. Offsets in the graph are absolute, so nothing else moves and the rest of the graph stays byte-for-byte identical to upstream.
 
 The launcher also ensures a usable `TERM`, and copies Termux's `rg` (Bionic) into `~/.cache/opencode/bin/rg`, which is where OpenCode reads the ripgrep for the `glob`/`grep` tools from — replacing the official glibc download, which won't run on Bionic. If the cache holds a broken `rg`, the launcher repairs it on the next run.
+
+### Known limitations
+
+OpenCode's payload embeds three shared objects, not one. Only `libopentui` is rebuilt for Bionic; the other two are still the upstream glibc builds and cannot be `dlopen`ed on Android:
+
+| embedded library | linked against | used by |
+| --- | --- | --- |
+| `libopentui` | Bionic (rebuilt) | the TUI |
+| `libfff_c` | glibc (`libc.so.6`) | fuzzy find |
+| `librust_pty_arm64` | glibc (`libc.so.6`, `libutil.so.1`) | PTY-backed shells |
+
+Everything that does not touch those two loads fine — the TUI, `glob`, `grep`, `bash` and ordinary tool calls all work. Fuzzy find and PTY-backed interactive shells are expected to fail until they are rebuilt the same way. Fixing this means building two more libraries against the NDK and pinning them as release assets, exactly like `libopentui`.
+
+Bun materialises an embedded library into a temp file before `dlopen`ing it, and does not always remove it — a killed process leaves the copy behind. The graft records the real library length so that copy is 5.6 MB rather than the 13 MB the padded slot implied, but it is still a temp file, so clearing `/tmp` after an unclean exit is a reasonable habit on a phone.
 
 ### Play Store Termux
 
